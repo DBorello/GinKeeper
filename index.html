@@ -141,6 +141,15 @@ table.stats td.lead{font-weight:700;color:var(--accent)}
 .tab .s{font-size:1.2rem;line-height:1.1}
 .tab[aria-current="page"]{color:var(--ink)}
 .tab[aria-current="page"] .s{color:var(--red)}
+.syncchip{border:1px solid var(--rule);background:var(--sheet);border-radius:99px;padding:4px 12px 4px 22px;font-size:.78rem;font-weight:600;color:var(--muted);position:relative;min-height:30px;white-space:nowrap}
+.syncchip::before{content:"";position:absolute;left:10px;top:50%;width:7px;height:7px;margin-top:-3.5px;border-radius:50%;background:var(--muted)}
+.syncchip[data-state="ok"]::before{background:var(--accent)}
+.syncchip[data-state="offline"]::before{background:var(--gold)}
+.syncchip[data-state="error"]{color:var(--red);border-color:var(--red)}
+.syncchip[data-state="error"]::before{background:var(--red)}
+.steps{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px;font-size:.9rem}
+details.plain summary{font-weight:600;cursor:pointer;color:var(--accent)}
+details.plain[open] summary{margin-bottom:10px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:99px;font-weight:600;font-size:.9rem;z-index:6;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion: no-preference){.banner{animation:rise .35s ease-out}@keyframes rise{from{transform:translateY(6px)}to{transform:none}}}
 </style>
@@ -160,7 +169,8 @@ function normalize(d){d=d||{};d.players=d.players||[];d.matches=d.matches||[];d.
 function load(){try{var s=localStorage.getItem(KEY);if(s)return normalize(JSON.parse(s))}catch(e){}return normalize({})}
 var db=load();
 var storageOK=true;
-function save(){try{localStorage.setItem(KEY,JSON.stringify(db));storageOK=true}catch(e){storageOK=false}}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(exportData()));storageOK=true}catch(e){storageOK=false}}
+function save(){persist();if(db.sync)scheduleSync()}
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
 
 var ui={tab:'play',knocker:null,type:'knock',kdw:null,ddw:'',manWinner:null,manPts:'',manTag:'',event:null,doneId:null,confirm:null,open:null,h2h:null,np1:'',np2:'',importText:''};
@@ -169,7 +179,15 @@ try{var t=localStorage.getItem(KEY+'.tab');if(t)ui.tab=t}catch(e){}
 /* ---------- model ---------- */
 function player(id){for(var i=0;i<db.players.length;i++)if(db.players[i].id===id)return db.players[i];return {id:id,name:'?'}}
 function nm(id){return player(id).name}
-function findOrCreate(name){name=name.trim();var l=name.toLowerCase();for(var i=0;i<db.players.length;i++)if(db.players[i].name.toLowerCase()===l)return db.players[i].id;var p={id:uid(),name:name};db.players.push(p);return p.id}
+function slug(n){return n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'player'}
+function pid(name){var b='p_'+slug(name),id=b,i=2;while(db.players.some(function(p){return p.id===id}))id=b+'-'+(i++);return id}
+function findOrCreate(name){name=name.trim();var l=name.toLowerCase();for(var i=0;i<db.players.length;i++)if(db.players[i].name.toLowerCase()===l)return db.players[i].id;var p={id:pid(name),name:name};db.players.push(p);touchPlayer(p);return p.id}
+/* change tracking for sync */
+function dirty(id){if(db.sync){db.sync.dirty=db.sync.dirty||{};db.sync.dirty[id]=1}}
+function touchMatch(m){m.u=Date.now();dirty(m.id)}
+function touchPlayer(p){p.u=Date.now();dirty(p.id)}
+function touchSettings(){db.settingsU=Date.now();dirty('settings')}
+function tombstone(id){db.tombs=db.tombs||{};db.tombs[id]=Date.now();dirty(id)}
 function other(m,id){return m.players[0]===id?m.players[1]:m.players[0]}
 function target(m){return Math.floor(m.rules.bestOf/2)+1}
 function newGame(){return {id:uid(),start:Date.now(),hands:[]}}
@@ -188,7 +206,7 @@ function computeHand(r,knocker,defender,type,kdw,ddw){
 }
 function startMatch(a,b){
   var m={id:uid(),players:[a,b],rules:Object.assign({},db.settings),start:Date.now(),status:'active',winner:null,games:[newGame()]};
-  db.matches.push(m);ui.doneId=null;ui.event=null;resetEntry();save();return m;
+  db.matches.push(m);touchMatch(m);ui.doneId=null;ui.event=null;resetEntry();save();return m;
 }
 function addHand(m,h){
   var g=curGame(m);h.id=uid();h.ts=Date.now();h.pts=h.base+h.bonus;g.hands.push(h);
@@ -201,7 +219,7 @@ function addHand(m,h){
     if(wins[w]>=target(m)){m.status='done';m.winner=w;m.end=Date.now();ui.event.type='match';ui.doneId=m.id}
     else m.games.push(newGame());
   }
-  save();
+  touchMatch(m);save();
 }
 function undo(m){
   var g=curGame(m);
@@ -209,7 +227,7 @@ function undo(m){
   if(!g.hands.length)return false;
   g.hands.pop();delete g.winner;delete g.credit;delete g.end;delete g.final;
   if(m.status==='done'){m.status='active';m.winner=null;delete m.end;ui.doneId=null}
-  ui.event=null;save();return true;
+  ui.event=null;touchMatch(m);save();return true;
 }
 
 /* ---------- stats ---------- */
@@ -448,7 +466,7 @@ function viewHistory(){
 function viewSettings(){
   var r=db.settings;
   function num(id,label,v){return '<label class="f">'+label+'<input id="'+id+'" data-set="'+id+'" inputmode="numeric" pattern="[0-9]*" value="'+v+'"></label>'}
-  var h='<div class="card"><h2>Rules</h2><p class="small muted" style="margin:0">Apply to new matches. A match in progress keeps the rules it started with.</p>'+
+  var h=syncCard()+'<div class="card"><h2>Rules</h2><p class="small muted" style="margin:0">Apply to new matches. A match in progress keeps the rules it started with.</p>'+
   '<div class="row">'+num('gameTo','Game to',r.gameTo)+num('bestOf','Match best of',r.bestOf)+'</div>'+
   '<div class="row">'+num('ginBonus','Gin bonus',r.ginBonus)+num('setBonus','Set bonus',r.setBonus)+'</div>'+
   '<div class="row">'+num('shutoutWins','Shutout counts as',r.shutoutWins)+'<label class="f">Big gin<select id="bigGin" data-set="bigGin"><option value="0">Off</option><option value="1"'+(r.bigGin?' selected':'')+'>On</option></select></label></div>'+
@@ -458,22 +476,52 @@ function viewSettings(){
   if(db.players.length){
     h+='<div class="card"><h2>Players</h2>'+db.players.map(function(p){return '<label class="f">Rename<input data-rename="'+p.id+'" id="pn-'+p.id+'" value="'+esc(p.name)+'"></label>'}).join('')+'</div>';
   }
-  var json=JSON.stringify(db);
-  h+='<div class="card"><h2>Backup</h2><p class="small muted" style="margin:0">Scores live on this device only. Copy or save a backup to move them to another phone or keep them safe.</p>'+
+  var json=JSON.stringify(exportData());
+  h+='<div class="card"><h2>Backup</h2><p class="small muted" style="margin:0">'+(db.sync?'A copy of every match, for safekeeping. It doesn’t include your sync settings.':'Scores live on this device only. Copy or save a backup to move them to another phone or keep them safe.')+'</p>'+
   '<div class="row"><button class="btn" data-act="copy">Copy backup</button>'+(window.GIN_PWA?'<button class="btn" data-act="download">Save file</button>':'')+'</div>'+
   '<textarea id="exp" readonly aria-label="Backup data">'+esc(json)+'</textarea>'+
   '<h3>Restore</h3><input type="file" id="impFile" accept="application/json,.json,.txt"><textarea id="impText" placeholder="…or paste a backup here">'+esc(ui.importText)+'</textarea>'+
   (ui.confirm==='import'?'<div class="row"><span class="small" style="flex:1">Replace everything on this device with the backup?</span><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="yes-import">Replace</button></div>':'<button class="btn" data-act="ask" data-v="import">Restore backup</button>')+
   '<div class="warn" id="impwarn" hidden></div></div>';
-  h+=confirmBlock('wipe','Erase every match, player and stat on this device?','Erase all','Erase all data');
+  h+=confirmBlock('wipe',db.sync?'Erase every match, player and stat on this phone and stop syncing? Your scores stay in the cloud and come back if you reconnect.':'Erase every match, player and stat on this device?','Erase all','Erase all data');
   h+='<p class="small muted" style="text-align:center;margin:0">'+(storageOK?'Saved on this device.':'This browser is blocking storage, so scores will be lost when you close it.')+'</p>';
   return h;
 }
 
+function syncCard(){
+  var h='<div class="card"><h2>Sync</h2>';
+  if(db.sync){
+    h+='<div class="banner" id="syncStatus" style="animation:none">'+syncStatusHtml()+'</div>'+
+    '<p class="small muted" style="margin:0">Scores save on this phone first, so play works with no signal. Changes upload when you’re back online. Keep score for a match on one phone at a time.</p>'+
+    '<div class="row"><button class="btn primary" data-act="syncnow">Sync now</button><button class="btn" data-act="showsetup">'+(ui.showSetup?'Hide':'Add another device')+'</button></div>';
+    if(ui.showSetup)h+='<p class="small muted" style="margin:0">On the other phone, open Gin Ledger from its home screen icon, go to Settings → Sync, and paste this setup code.</p><textarea id="setupOut" readonly aria-label="Setup code">'+esc(setupCode())+'</textarea><button class="btn" data-act="copysetup">Copy setup code</button>';
+    h+=(ui.confirm==='unsync'?'<div class="row"><span class="small" style="flex:1">Stop syncing this phone? Its scores stay here and in the cloud.</span><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="yes-unsync">Stop syncing</button></div>':
+      '<button class="link" style="color:var(--muted);align-self:flex-start" data-act="ask" data-v="unsync">Stop syncing on this phone</button>');
+    return h+'</div>';
+  }
+  h+='<p class="small muted" style="margin:0">Share matches and lifetime stats across phones. Scoring keeps working offline and catches up when you’re back online.</p>'+
+  '<label class="f">Setup code from another phone<textarea id="sjoin" placeholder="GIN1.…">'+esc(ui.sjoin||'')+'</textarea></label>'+
+  '<button class="btn primary" data-act="join">Connect with setup code</button>'+
+  '<details class="plain"'+(ui.newOpen?' open':'')+' id="newdb"><summary>First phone: connect a new Supabase project</summary><div style="display:flex;flex-direction:column;gap:12px">'+
+  '<ol class="steps"><li>At supabase.com, create a free project.</li><li>Open <b>SQL Editor</b>, paste the setup SQL below, and tap <b>Run</b>.</li><li>In <b>Project Settings</b>, copy the Project URL (under Data API) and the publishable or anon key (under API Keys).</li><li>Paste both here, tap Generate for a sync code, then Connect.</li></ol>'+
+  '<textarea id="sqlOut" readonly aria-label="Setup SQL" style="min-height:140px">'+esc(SETUP_SQL)+'</textarea><button class="btn" data-act="copysql">Copy setup SQL</button>'+
+  '<label class="f">Project URL<input id="surl" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url" placeholder="https://abcd1234.supabase.co" value="'+esc(ui.surl||'')+'"></label>'+
+  '<label class="f">API key<input id="skey" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sb_publishable_… or eyJ…" value="'+esc(ui.skey||'')+'"></label>'+
+  '<div class="row" style="align-items:flex-end"><label class="f">Sync code<input id="scode" autocapitalize="off" autocorrect="off" spellcheck="false" value="'+esc(ui.scode||'')+'" placeholder="At least 12 characters"></label><button class="btn" data-act="gencode">Generate</button></div>'+
+  '<p class="small muted" style="margin:0">The sync code keeps your scores separate from anyone else using the same project. Treat it like a password.</p>'+
+  '<button class="btn primary" id="connectBtn" data-act="connect">Connect</button></div></details>'+
+  '<div class="warn" id="syncwarn" hidden></div>';
+  return h+'</div>';
+}
+function exportData(){var o={};Object.keys(db).forEach(function(k){if(k!=='sync')o[k]=db[k]});return o}
+function copyText(txt,taId,msg){var ta=document.getElementById(taId);try{navigator.clipboard.writeText(txt).then(function(){toast(msg)},function(){ta.focus();ta.select();toast('Select all and copy')})}catch(err){ta.focus();ta.select();toast('Select all and copy')}}
+
 var TABS=[['play','Play','♠︎'],['stats','Stats','♥︎'],['history','History','♣︎'],['settings','Settings','♦︎']];
 function render(){
   var app=document.getElementById('app');
-  var head='<div class="top"><h1 class="brand">Gin Ledger<span class="suit">♦︎</span></h1><span class="sub">'+({play:activeMatch()?'Match in progress':'Scorekeeper',stats:'Stats',history:'Matches',settings:'Settings'}[ui.tab])+'</span></div>';
+  var head='<div class="top"><h1 class="brand">Gin Ledger<span class="suit">♦︎</span></h1>'+
+    (db.sync?'<button class="syncchip" id="syncChip" data-tab="settings" data-state="'+sync.state+'">'+esc(syncLabel())+'</button>':
+    '<span class="sub">'+({play:activeMatch()?'Match in progress':'Scorekeeper',stats:'Stats',history:'Matches',settings:'Settings'}[ui.tab])+'</span>')+'</div>';
   var body=ui.tab==='stats'?viewStats():ui.tab==='history'?viewHistory():ui.tab==='settings'?viewSettings():viewPlay();
   app.innerHTML=head+body;
   document.getElementById('tabs').innerHTML=TABS.map(function(t){return '<button class="tab" data-tab="'+t[0]+'"'+(ui.tab===t[0]?' aria-current="page"':'')+'><span class="s">'+t[2]+'</span>'+t[1]+'</button>'}).join('');
@@ -511,17 +559,25 @@ document.addEventListener('click',function(e){
     case 'newmatch':ui.doneId=null;ui.np1='';ui.np2='';render();return;
     case 'ask':ui.confirm=v;render();return;
     case 'cancel':ui.confirm=null;render();return;
-    case 'yes-abandon':if(m){db.matches=db.matches.filter(function(x){return x!==m});save();ui.confirm=null;ui.event=null;resetEntry();toast('Match deleted');render()}return;
+    case 'yes-abandon':if(m){db.matches=db.matches.filter(function(x){return x!==m});tombstone(m.id);save();ui.confirm=null;ui.event=null;resetEntry();toast('Match deleted');render()}return;
     case 'open':ui.open=ui.open===v?null:v;ui.confirm=null;render();return;
-    case 'del':db.matches=db.matches.filter(function(x){return x.id!==v});if(ui.doneId===v)ui.doneId=null;save();ui.confirm=null;toast('Match deleted');render();return;
-    case 'defaults':db.settings=Object.assign({},DEFAULT_RULES);save();render();toast('Default rules restored');return;
-    case 'copy':{var txt=JSON.stringify(db),ta=document.getElementById('exp');
+    case 'del':db.matches=db.matches.filter(function(x){return x.id!==v});tombstone(v);if(ui.doneId===v)ui.doneId=null;save();ui.confirm=null;toast('Match deleted');render();return;
+    case 'defaults':db.settings=Object.assign({},DEFAULT_RULES);touchSettings();save();render();toast('Default rules restored');return;
+    case 'copy':{var txt=JSON.stringify(exportData()),ta=document.getElementById('exp');
       try{navigator.clipboard.writeText(txt).then(function(){toast('Backup copied')},function(){ta.focus();ta.select();toast('Select all and copy')})}catch(err){ta.focus();ta.select();toast('Select all and copy')}return}
-    case 'download':{try{var blob=new Blob([JSON.stringify(db,null,1)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='gin-ledger-'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();toast('Backup saved')}catch(err){toast('Use Copy backup instead')}return}
+    case 'download':{try{var blob=new Blob([JSON.stringify(exportData(),null,1)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='gin-ledger-'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();toast('Backup saved')}catch(err){toast('Use Copy backup instead')}return}
     case 'yes-import':{var raw=(document.getElementById('impText').value||'').trim(),iw=document.getElementById('impwarn');
-      try{var d3=JSON.parse(raw);if(!d3||!Array.isArray(d3.matches)||!Array.isArray(d3.players))throw 0;db=normalize(d3);save();ui.confirm=null;ui.importText='';ui.doneId=null;toast('Backup restored');render()}
+      try{var d3=JSON.parse(raw);if(!d3||!Array.isArray(d3.matches)||!Array.isArray(d3.players))throw 0;var keepSync=db.sync;db=normalize(d3);db.sync=keepSync?Object.assign(keepSync,{dirty:{}}):null;if(db.sync){migrateIds();markAllDirty()}save();ui.confirm=null;ui.importText='';ui.doneId=null;toast('Backup restored');render()}
       catch(err){ui.confirm=null;render();var iw2=document.getElementById('impwarn');iw2.textContent='That doesn’t look like a Gin Ledger backup. Paste the full text from Copy backup.';iw2.hidden=false}return}
-    case 'yes-wipe':db=normalize({});save();ui.confirm=null;ui.doneId=null;resetEntry();toast('All data erased');render();return;
+    case 'syncnow':sync.busy=false;runSync();return;
+    case 'showsetup':ui.showSetup=!ui.showSetup;render();return;
+    case 'copysetup':copyText(setupCode(),'setupOut','Setup code copied');return;
+    case 'copysql':copyText(SETUP_SQL,'sqlOut','Setup SQL copied');return;
+    case 'gencode':ui.scode=genCode();ui.newOpen=true;render();return;
+    case 'connect':ui.newOpen=true;connect(ui.surl,ui.skey,ui.scode);return;
+    case 'join':{var o=parseSetup(ui.sjoin),sw=document.getElementById('syncwarn');if(!o){sw.textContent='Paste the full setup code. It starts with GIN1.';sw.hidden=false;return}connect(o.u,o.k,o.c);return}
+    case 'yes-unsync':db.sync=null;sync.state='off';ui.confirm=null;ui.showSetup=false;persist();toast('Sync stopped on this phone');render();return;
+    case 'yes-wipe':db=normalize({});sync.state='off';save();ui.confirm=null;ui.doneId=null;resetEntry();toast('All data erased');render();return;
   }
 });
 function focusDdw(){var d=document.getElementById('ddw');if(d&&!d.value&&(ui.type!=='knock'||ui.kdw!=null)&&ui.knocker)d.focus({preventScroll:true})}
@@ -532,6 +588,7 @@ document.addEventListener('input',function(e){
   else if(t.id==='np1')ui.np1=t.value;
   else if(t.id==='np2')ui.np2=t.value;
   else if(t.id==='impText')ui.importText=t.value;
+  else if(t.id==='surl'||t.id==='skey'||t.id==='scode'||t.id==='sjoin')ui[t.id]=t.value;
 });
 document.addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.target.id==='ddw'||e.target.id==='manPts')){var b=document.getElementById('rec');if(b&&!b.disabled){e.preventDefault();b.click()}}});
 document.addEventListener('change',function(e){
@@ -540,11 +597,181 @@ document.addEventListener('change',function(e){
   if(t.dataset.set){var k=t.dataset.set;
     if(k==='bigGin'){db.settings.bigGin=t.value==='1'}
     else{var n=parseInt(t.value,10);var min={gameTo:10,bestOf:1,ginBonus:0,setBonus:0,shutoutWins:1,bigGinBonus:0}[k];if(!(n>=min)){toast('Enter a number of at least '+min);render();return}db.settings[k]=n}
-    save();render();return}
-  if(t.dataset.rename){var p=player(t.dataset.rename),nv=t.value.trim();if(nv&&!db.players.some(function(x){return x.id!==p.id&&x.name.toLowerCase()===nv.toLowerCase()})){p.name=nv;save();toast('Renamed')}else{t.value=p.name;toast('Name is empty or already used')}return}
+    touchSettings();save();render();return}
+  if(t.dataset.rename){var p=player(t.dataset.rename),nv=t.value.trim();if(nv&&!db.players.some(function(x){return x.id!==p.id&&x.name.toLowerCase()===nv.toLowerCase()})){p.name=nv;touchPlayer(p);save();toast('Renamed')}else{t.value=p.name;toast('Name is empty or already used')}return}
   if(t.id==='h2a'||t.id==='h2b'){ui.h2h=[document.getElementById('h2a').value,document.getElementById('h2b').value];render();return}
   if(t.id==='impFile'&&t.files&&t.files[0]){var fr=new FileReader();fr.onload=function(){ui.importText=String(fr.result);ui.confirm='import';render()};fr.readAsText(t.files[0])}
 });
+
+/* ---------- cloud sync (Supabase) ----------
+   Local-first: every change is saved on the phone immediately and queued in db.sync.dirty.
+   When online, queued docs are pushed, then everything newer than db.sync.seq is pulled.
+   Each match, player and the rules are one document; the newer edit (u) wins. */
+var SETUP_SQL=[
+"create sequence if not exists gin_seq;",
+"create table if not exists gin_docs(",
+"  league text not null, id text not null, kind text not null,",
+"  data jsonb, deleted boolean not null default false,",
+"  u bigint not null, seq bigint not null default nextval('gin_seq'),",
+"  primary key(league,id));",
+"alter table gin_docs enable row level security;",
+"revoke all on gin_docs from anon, authenticated;",
+"create or replace function gin_push(p_league text, p_docs jsonb) returns int",
+"language plpgsql security definer set search_path=public as $$",
+"declare d jsonb; n int:=0;",
+"begin",
+"  if length(p_league)<12 then raise exception 'sync code too short'; end if;",
+"  for d in select * from jsonb_array_elements(p_docs) loop",
+"    insert into gin_docs(league,id,kind,data,deleted,u,seq)",
+"    values(p_league,d->>'id',d->>'kind',d->'data',coalesce((d->>'deleted')::boolean,false),(d->>'u')::bigint,nextval('gin_seq'))",
+"    on conflict(league,id) do update set kind=excluded.kind,data=excluded.data,",
+"      deleted=excluded.deleted,u=excluded.u,seq=excluded.seq",
+"    where gin_docs.u < excluded.u;",
+"    n:=n+1;",
+"  end loop;",
+"  return n;",
+"end $$;",
+"create or replace function gin_pull(p_league text, p_since bigint)",
+"returns table(id text, kind text, data jsonb, deleted boolean, u bigint, seq bigint)",
+"language sql stable security definer set search_path=public as $$",
+"  select id,kind,data,deleted,u,seq from gin_docs",
+"  where league=p_league and seq>p_since order by seq limit 1000 $$;",
+"grant execute on function gin_push(text,jsonb) to anon;",
+"grant execute on function gin_pull(text,bigint) to anon;"].join('\n');
+var sync={state:db.sync?'idle':'off',busy:false,timer:null,err:'',pending:false};
+function waiting(){return db.sync?Object.keys(db.sync.dirty||{}).length:0}
+function scheduleSync(ms){if(!db.sync)return;clearTimeout(sync.timer);sync.timer=setTimeout(runSync,ms==null?1200:ms)}
+function hdrs(key){var h={'Content-Type':'application/json','apikey':key};if(/^eyJ/.test(key))h.Authorization='Bearer '+key;return h}
+function rpc(cfg,fn,body){
+  return fetch(cfg.url+'/rest/v1/rpc/'+fn,{method:'POST',headers:hdrs(cfg.key),body:JSON.stringify(body),cache:'no-store'})
+  .then(function(r){if(!r.ok)return r.text().then(function(t){var e=new Error(t||('HTTP '+r.status));e.status=r.status;throw e});return r.json()});
+}
+function errMsg(e){
+  var t=String(e&&e.message||e);
+  if(e instanceof TypeError)return 'Can’t reach Supabase. Check the project URL, or you may be offline.';
+  if(e.status===401||e.status===403||/api key|apikey|JWT/i.test(t))return 'Supabase rejected the API key. Use the anon or publishable key.';
+  if(e.status===404||/gin_pull|gin_push|function/i.test(t))return 'The database isn’t set up yet. Run the setup SQL in Supabase.';
+  if(/too short/.test(t))return 'The sync code must be at least 12 characters.';
+  return t.slice(0,160);
+}
+function docFor(id){
+  if(id==='settings')return {id:'settings',kind:'settings',data:db.settings,u:db.settingsU||1};
+  if(db.tombs&&db.tombs[id])return {id:id,kind:'match',deleted:true,data:null,u:db.tombs[id]};
+  var p=db.players.find(function(x){return x.id===id});if(p)return {id:id,kind:'player',data:{name:p.name},u:p.u||1};
+  var m=matchById(id);if(m)return {id:id,kind:'match',data:m,u:m.u||m.end||m.start||1};
+  return null;
+}
+function applyRow(r){
+  var u=Number(r.u);
+  if(r.kind==='settings'){if((db.settingsU||0)<u){db.settings=Object.assign({},DEFAULT_RULES,r.data);db.settingsU=u;delete db.sync.dirty.settings;return true}return false}
+  if(r.kind==='player'){
+    var p=db.players.find(function(x){return x.id===r.id});
+    if(!p){db.players.push({id:r.id,name:r.data.name,u:u});return true}
+    if((p.u||0)<u){p.name=r.data.name;p.u=u;delete db.sync.dirty[r.id];return true}return false}
+  var i=db.matches.findIndex(function(x){return x.id===r.id}),local=db.matches[i];
+  if(r.deleted){
+    if(local&&(local.u||0)<=u){db.matches.splice(i,1);if(ui.doneId===r.id)ui.doneId=null;delete db.sync.dirty[r.id];return true}
+    return false}
+  if(db.tombs&&db.tombs[r.id]>=u)return false;
+  if(!local){var nm2=r.data;nm2.u=u;db.matches.push(nm2);return true}
+  if((local.u||0)<u){var n=r.data;n.u=u;db.matches[i]=n;delete db.sync.dirty[r.id];if(ui.event&&local.status==='active')ui.event=null;return true}
+  return false;
+}
+function pullAll(cfg){
+  var changed=false;
+  function step(){return rpc(cfg,'gin_pull',{p_league:cfg.code,p_since:cfg.seq||0}).then(function(rows){
+    rows.forEach(function(r){if(applyRow(r))changed=true;if(Number(r.seq)>(cfg.seq||0))cfg.seq=Number(r.seq)});
+    persist();
+    if(rows.length>=1000)return step();
+    if(changed)db.matches.sort(function(a,b){return a.start-b.start});
+    return changed})}
+  return step();
+}
+function runSync(){
+  var cfg=db.sync;if(!cfg||sync.busy)return Promise.resolve();
+  if(navigator.onLine===false){sync.state='offline';paintSync();return Promise.resolve()}
+  sync.busy=true;sync.state='syncing';paintSync();
+  cfg.dirty=cfg.dirty||{};
+  var ids=Object.keys(cfg.dirty),docs=ids.map(docFor).filter(Boolean),snap={};
+  docs.forEach(function(d){snap[d.id]=d.u});
+  ids.forEach(function(id){if(!snap[id])delete cfg.dirty[id]});
+  var push=docs.length?rpc(cfg,'gin_push',{p_league:cfg.code,p_docs:docs}):Promise.resolve();
+  return push.then(function(){
+      ids.forEach(function(id){var d=docFor(id);if(!d||d.u===snap[id])delete cfg.dirty[id]});
+      if(db.tombs)ids.forEach(function(id){if(db.tombs[id]&&!cfg.dirty[id]&&Date.now()-db.tombs[id]>864e5*30)delete db.tombs[id]});
+      persist();return pullAll(cfg)})
+    .then(function(changed){sync.state='ok';sync.err='';cfg.last=Date.now();persist();if(changed)safeRender();else paintSync()})
+    .catch(function(e){sync.state=(e instanceof TypeError&&navigator.onLine===false)?'offline':(e instanceof TypeError?'offline':'error');sync.err=errMsg(e);paintSync()})
+    .then(function(){sync.busy=false;if(db.sync&&waiting()&&sync.state==='ok')scheduleSync(400)});
+}
+function safeRender(){var a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName)){sync.pending=true;paintSync();return}render()}
+document.addEventListener('focusout',function(){setTimeout(function(){if(sync.pending){var a=document.activeElement;if(!(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))){sync.pending=false;render()}}},50)});
+function syncLabel(){
+  if(!db.sync)return '';var n=waiting();
+  if(sync.state==='syncing')return 'Syncing…';
+  if(sync.state==='offline')return 'Offline'+(n?' · '+n+' to upload':' · saved here');
+  if(sync.state==='error')return 'Sync problem';
+  if(sync.state==='ok'&&!n)return 'Synced';
+  return n?n+' to upload':'Sync on';
+}
+function paintSync(){
+  var c=document.getElementById('syncChip');if(c){c.textContent=syncLabel();c.dataset.state=sync.state;c.hidden=!db.sync}
+  var s=document.getElementById('syncStatus');if(s)s.innerHTML=syncStatusHtml();
+}
+function syncStatusHtml(){
+  if(!db.sync)return '';
+  var last=db.sync.last?new Date(db.sync.last).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'never';
+  return '<b>'+esc(syncLabel())+'</b><span class="small muted">Last synced '+esc(last)+(waiting()?' · '+waiting()+' change'+(waiting()>1?'s':'')+' waiting':'')+'</span>'+(sync.state==='error'&&sync.err?'<span class="warn">'+esc(sync.err)+'</span>':'');
+}
+function markAllDirty(){
+  var now=Date.now();
+  db.players.forEach(function(p){if(!p.u)p.u=now;dirty(p.id)});
+  db.matches.forEach(function(m){if(!m.u)m.u=m.end||m.start||now;dirty(m.id)});
+  if(!db.settingsU)db.settingsU=1;dirty('settings');
+  Object.keys(db.tombs||{}).forEach(dirty);
+}
+function migrateIds(){
+  var map={};
+  db.players.slice().forEach(function(p){
+    if(/^p_/.test(p.id))return;
+    var base='p_'+slug(p.name),target=base,ex=db.players.find(function(q){return q.id===target});
+    if(ex&&ex.name.toLowerCase()!==p.name.toLowerCase()){var i=2;while(db.players.some(function(q){return q.id===base+'-'+i}))i++;target=base+'-'+i;ex=null}
+    map[p.id]=target;
+    if(ex)db.players=db.players.filter(function(q){return q!==p});else p.id=target;
+  });
+  if(!Object.keys(map).length)return;
+  function r(id){return map[id]||id}
+  db.matches.forEach(function(m){
+    m.players=m.players.map(r);if(m.winner)m.winner=r(m.winner);
+    m.games.forEach(function(g){
+      if(g.winner)g.winner=r(g.winner);
+      if(g.final){var f={};Object.keys(g.final).forEach(function(k){f[r(k)]=g.final[k]});g.final=f}
+      g.hands.forEach(function(h){h.winner=r(h.winner);if(h.knocker)h.knocker=r(h.knocker)});
+    });
+  });
+  ui.h2h=null;
+}
+function genCode(){var a='abcdefghjkmnpqrstuvwxyz23456789',s='',b=new Uint8Array(16);crypto.getRandomValues(b);for(var i=0;i<16;i++){s+=a[b[i]%a.length];if(i%4===3&&i<15)s+='-'}return s}
+function setupCode(){return 'GIN1.'+btoa(JSON.stringify({u:db.sync.url,k:db.sync.key,c:db.sync.code}))}
+function parseSetup(t){t=(t||'').trim();if(!/^GIN1\./.test(t))return null;try{var o=JSON.parse(atob(t.slice(5)));return o.u&&o.k&&o.c?o:null}catch(e){return null}}
+function connect(url,key,code){
+  var w=document.getElementById('syncwarn');function fail(m){if(w){w.textContent=m;w.hidden=false}}
+  url=(url||'').trim().replace(/\/+$/,'').replace(/\/rest\/v1$/,'');key=(key||'').trim();code=(code||'').trim();
+  if(!/^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1)[:/])[^\s]+$/.test(url))return fail('Enter the Project URL. It starts with https:// and ends in .supabase.co');
+  if(!key)return fail('Paste the anon or publishable API key.');
+  if(code.length<12)return fail('The sync code must be at least 12 characters. Tap Generate.');
+  var cfg={url:url,key:key,code:code,seq:0,dirty:{}};
+  var b=document.getElementById('connectBtn');if(b){b.disabled=true;b.textContent='Connecting…'}
+  rpc(cfg,'gin_pull',{p_league:code,p_since:9007199254740991}).then(function(){
+    db.sync=cfg;migrateIds();markAllDirty();persist();sync.state='idle';ui.sjoin='';ui.surl='';ui.skey='';ui.scode='';
+    toast('Sync connected');render();return runSync();
+  }).catch(function(e){if(b){b.disabled=false;b.textContent='Connect'}fail(errMsg(e))});
+}
+window.addEventListener('online',function(){scheduleSync(0)});
+document.addEventListener('toggle',function(e){if(e.target&&e.target.id==='newdb')ui.newOpen=e.target.open},true);
+window.addEventListener('offline',function(){if(db.sync){sync.state='offline';paintSync()}});
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')scheduleSync(0)});
+setInterval(function(){if(db.sync&&document.visibilityState==='visible'&&!sync.busy)runSync()},20000);
 
 /* keep the screen awake during play where allowed */
 var lock=null;
@@ -555,8 +782,9 @@ document.addEventListener('pointerdown',wake,{once:true});
 /* offline support when installed from its own site */
 try{if('serviceWorker' in navigator&&location.protocol==='https:'&&window.GIN_PWA)navigator.serviceWorker.register('sw.js').catch(function(){})}catch(e){}
 
-window.__gin={db:function(){return db},computeHand:computeHand,computeStats:computeStats};
+window.__gin={db:function(){return db},computeHand:computeHand,computeStats:computeStats,sync:function(){return runSync()},state:function(){return sync}};
 render();
+if(db.sync)scheduleSync(0);
 })();
 </script>
 </body>
