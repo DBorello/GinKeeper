@@ -483,7 +483,7 @@ function viewSettings(){
   '<h3>Restore</h3><input type="file" id="impFile" accept="application/json,.json,.txt"><textarea id="impText" placeholder="…or paste a backup here">'+esc(ui.importText)+'</textarea>'+
   (ui.confirm==='import'?'<div class="row"><span class="small" style="flex:1">Replace everything on this device with the backup?</span><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="yes-import">Replace</button></div>':'<button class="btn" data-act="ask" data-v="import">Restore backup</button>')+
   '<div class="warn" id="impwarn" hidden></div></div>';
-  h+=confirmBlock('wipe',db.sync?'Erase every match, player and stat on this phone and stop syncing? Your scores stay in the cloud and come back if you reconnect.':'Erase every match, player and stat on this device?','Erase all','Erase all data');
+  h+=confirmBlock('wipe',BUILTIN?'Erase this phone’s copy of every match? Everything already synced downloads again from the cloud.':db.sync?'Erase every match, player and stat on this phone and stop syncing? Your scores stay in the cloud and come back if you reconnect.':'Erase every match, player and stat on this device?','Erase all','Erase all data');
   h+='<p class="small muted" style="text-align:center;margin:0">'+(storageOK?'Saved on this device.':'This browser is blocking storage, so scores will be lost when you close it.')+'</p>';
   return h;
 }
@@ -492,9 +492,10 @@ function syncCard(){
   var h='<div class="card"><h2>Sync</h2>';
   if(db.sync){
     h+='<div class="banner" id="syncStatus" style="animation:none">'+syncStatusHtml()+'</div>'+
-    '<p class="small muted" style="margin:0">Scores save on this phone first, so play works with no signal. Changes upload when you’re back online. Keep score for a match on one phone at a time.</p>'+
-    '<div class="row"><button class="btn primary" data-act="syncnow">Sync now</button><button class="btn" data-act="showsetup">'+(ui.showSetup?'Hide':'Add another device')+'</button></div>';
+    '<p class="small muted" style="margin:0">Scores save on this phone first, so play works with no signal. Changes upload when you’re back online. Keep score for a match on one phone at a time.'+(BUILTIN?' Every phone that installs this app shares the same scores.':'')+'</p>'+
+    '<div class="row"><button class="btn primary" data-act="syncnow">Sync now</button>'+(BUILTIN?'':'<button class="btn" data-act="showsetup">'+(ui.showSetup?'Hide':'Add another device')+'</button>')+'</div>';
     if(ui.showSetup)h+='<p class="small muted" style="margin:0">On the other phone, open Gin Ledger from its home screen icon, go to Settings → Sync, and paste this setup code.</p><textarea id="setupOut" readonly aria-label="Setup code">'+esc(setupCode())+'</textarea><button class="btn" data-act="copysetup">Copy setup code</button>';
+    if(BUILTIN)return h+'</div>';
     h+=(ui.confirm==='unsync'?'<div class="row"><span class="small" style="flex:1">Stop syncing this phone? Its scores stay here and in the cloud.</span><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="yes-unsync">Stop syncing</button></div>':
       '<button class="link" style="color:var(--muted);align-self:flex-start" data-act="ask" data-v="unsync">Stop syncing on this phone</button>');
     return h+'</div>';
@@ -577,7 +578,7 @@ document.addEventListener('click',function(e){
     case 'connect':ui.newOpen=true;connect(ui.surl,ui.skey,ui.scode);return;
     case 'join':{var o=parseSetup(ui.sjoin),sw=document.getElementById('syncwarn');if(!o){sw.textContent='Paste the full setup code. It starts with GIN1.';sw.hidden=false;return}connect(o.u,o.k,o.c);return}
     case 'yes-unsync':db.sync=null;sync.state='off';ui.confirm=null;ui.showSetup=false;persist();toast('Sync stopped on this phone');render();return;
-    case 'yes-wipe':db=normalize({});sync.state='off';save();ui.confirm=null;ui.doneId=null;resetEntry();toast('All data erased');render();return;
+    case 'yes-wipe':db=normalize({});sync.state='off';ensureBuiltin();save();ui.confirm=null;ui.doneId=null;resetEntry();toast('All data erased');render();return;
   }
 });
 function focusDdw(){var d=document.getElementById('ddw');if(d&&!d.value&&(ui.type!=='knock'||ui.kdw!=null)&&ui.knocker)d.focus({preventScroll:true})}
@@ -783,6 +784,15 @@ document.addEventListener('pointerdown',wake,{once:true});
 try{if('serviceWorker' in navigator&&location.protocol==='https:'&&window.GIN_PWA)navigator.serviceWorker.register('sw.js').catch(function(){})}catch(e){}
 
 window.__gin={db:function(){return db},computeHand:computeHand,computeStats:computeStats,sync:function(){return runSync()},state:function(){return sync}};
+/* Built-in sync connection: every phone that opens this app joins the same scores. */
+var BUILTIN=parseSetup('GIN1.eyJ1IjoiaHR0cHM6Ly9ub3VsempxY2p2bGV4YXVqdGdmci5zdXBhYmFzZS5jbyIsImsiOiJzYl9wdWJsaXNoYWJsZV93YmtXVUpjQnJaMmhqZUZ1SGFRM2hnX0Y1LW5naS15IiwiYyI6IjcyZ3ItZ2tkcC13YXg5LXhyZnQifQ==');
+function ensureBuiltin(){
+  if(!BUILTIN)return;
+  if(db.sync&&db.sync.url===BUILTIN.u&&db.sync.code===BUILTIN.c&&db.sync.key===BUILTIN.k)return;
+  db.sync={url:BUILTIN.u,key:BUILTIN.k,code:BUILTIN.c,seq:0,dirty:{}};
+  migrateIds();markAllDirty();persist();sync.state='idle';
+}
+ensureBuiltin();
 render();
 if(db.sync)scheduleSync(0);
 })();
