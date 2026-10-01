@@ -150,6 +150,8 @@ table.stats td.lead{font-weight:700;color:var(--accent)}
 .steps{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px;font-size:.9rem}
 details.plain summary{font-weight:600;cursor:pointer;color:var(--accent)}
 details.plain[open] summary{margin-bottom:10px}
+body.typing .tabs{display:none}
+body.typing .wrap{padding-bottom:24px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:99px;font-weight:600;font-size:.9rem;z-index:6;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion: no-preference){.banner{animation:rise .35s ease-out}@keyframes rise{from{transform:translateY(6px)}to{transform:none}}}
 </style>
@@ -802,6 +804,12 @@ document.addEventListener('toggle',function(e){if(e.target&&e.target.id==='newdb
 window.addEventListener('offline',function(){if(db.sync){sync.state='offline';paintSync()}});
 document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')scheduleSync(0)});
 setInterval(function(){if(db.sync&&document.visibilityState==='visible'&&!sync.busy)runSync()},20000);
+
+/* hide the bottom tabs while the on-screen keyboard is up */
+function isField(el){return el&&(/^(TEXTAREA|SELECT)$/.test(el.tagName)||(el.tagName==='INPUT'&&!/^(file|button|checkbox|radio)$/.test(el.type)))}
+var typingT;
+document.addEventListener('focusin',function(e){if(isField(e.target)){clearTimeout(typingT);document.body.classList.add('typing')}});
+document.addEventListener('focusout',function(){clearTimeout(typingT);typingT=setTimeout(function(){if(!isField(document.activeElement))document.body.classList.remove('typing')},120)});
 
 /* keep the screen awake during play where allowed */
 var lock=null;
