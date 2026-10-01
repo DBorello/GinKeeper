@@ -701,9 +701,38 @@ function runSync(){
       ids.forEach(function(id){var d=docFor(id);if(!d||d.u===snap[id])delete cfg.dirty[id]});
       if(db.tombs)ids.forEach(function(id){if(db.tombs[id]&&!cfg.dirty[id]&&Date.now()-db.tombs[id]>864e5*30)delete db.tombs[id]});
       persist();return pullAll(cfg)})
-    .then(function(changed){sync.state='ok';sync.err='';cfg.last=Date.now();persist();if(changed)safeRender();else paintSync()})
+    .then(function(changed){if(runFixups())changed=true;sync.state='ok';sync.err='';cfg.last=Date.now();persist();if(changed)safeRender();else paintSync()})
     .catch(function(e){sync.state=(e instanceof TypeError&&navigator.onLine===false)?'offline':(e instanceof TypeError?'offline':'error');sync.err=errMsg(e);paintSync()})
     .then(function(){sync.busy=false;if(db.sync&&waiting()&&sync.state==='ok')scheduleSync(400)});
+}
+/* One-time data corrections. Each runs once, after a successful sync so the phone has the
+   latest data, and stamps the match it changes so other phones skip it. */
+var FIXUPS=[{id:'match1-2026-10-01',run:function(){
+  var FIX='match1-2026-10-01';
+  if(db.matches.some(function(m){return m.fix===FIX}))return false;
+  var m=db.matches.slice().sort(function(a,b){return a.start-b.start})[0],dan,ash;
+  if(m){
+    var ai=m.players.findIndex(function(id){return /^ash/i.test(nm(id))});
+    ash=m.players[ai<0?1:ai];dan=other(m,ash);
+  }else{
+    dan=findOrCreate('Dan');ash=findOrCreate('Ashley');
+    m={id:uid(),players:[dan,ash],rules:Object.assign({},db.settings),start:Date.now(),status:'active',winner:null,games:[newGame()]};
+    db.matches.push(m);
+  }
+  var rounds=[[dan,15],[ash,19],[ash,22],[dan,18],[dan,11],[ash,14],[ash,19],[dan,16],[dan,11],[dan,23],[dan,3],[dan,21]];
+  var g=m.games[0],t0=g.start||m.start;
+  g.hands=rounds.map(function(r,i){return {id:uid(),winner:r[0],knocker:null,base:r[1],bonus:0,pts:r[1],kind:'manual',tag:'',ts:t0+i*60000}});
+  var t=totals(m,g),w=t[dan]>=t[ash]?dan:ash,l=other(m,w);
+  delete g.winner;delete g.credit;delete g.final;delete g.end;
+  if(t[w]>=m.rules.gameTo){g.winner=w;g.credit=t[l]===0?m.rules.shutoutWins:1;g.final=t;g.end=t0+rounds.length*60000;if(m.games.length===1)m.games.push(newGame())}
+  var wins=matchWins(m),lead=wins[dan]>=wins[ash]?dan:ash;
+  if(wins[lead]>=target(m)){m.status='done';m.winner=lead;m.end=m.end||Date.now()}else{m.status='active';m.winner=null;delete m.end;if(ui.doneId===m.id)ui.doneId=null}
+  m.fix=FIX;ui.event=null;touchMatch(m);return true;
+}}];
+function runFixups(){
+  db.fixes=db.fixes||{};var changed=false;
+  FIXUPS.forEach(function(f){if(db.fixes[f.id])return;try{if(f.run())changed=true;db.fixes[f.id]=1}catch(e){}});
+  if(changed)persist();return changed;
 }
 function safeRender(){var a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName)){sync.pending=true;paintSync();return}render()}
 document.addEventListener('focusout',function(){setTimeout(function(){if(sync.pending){var a=document.activeElement;if(!(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))){sync.pending=false;render()}}},50)});
